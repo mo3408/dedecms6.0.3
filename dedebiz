@@ -1,0 +1,470 @@
+#!/usr/bin/env php
+<?php
+/**
+ * 命令行工具
+ *
+ * @version        2020年12月11日 tianya $
+ * @package        DedeBIZ.Command
+ * @copyright      Copyright (c) 2021, DedeBIZ.COM
+ * @license        https://www.dedebiz.com/license
+ * @link           https://www.dedebiz.com
+ */
+// 切换工作目录到./src
+$workDir = dirname(__FILE__) . "/src";
+chdir($workDir);
+
+if (substr(php_sapi_name(), 0, 3) === 'cgi') {
+	die("DedeCMSV6:needs php-cli to run\n\n");
+}
+
+$helpStr = "
+NAME:
+	DedeBIZ Cli Tools
+USAGE:
+	php ./dedebiz command [arguments...]
+COMMANDS:
+	serv,s Run cli web server for DedeCMSV6
+	make,m Make DedeCMSV6 HTML
+	update,u Update to latest system
+	help,h Shows a list of commands or help
+	quick,q Quick start a development environment
+WEBSITE:
+	https://www.dedebiz.com/help/
+";
+
+// 将选项转化为SQL IN参数
+function Option2SQLin($str = "")
+{
+	$str = preg_replace("#[^0-9-,]#", "", $str);
+	$strs = explode(",", $str);
+	foreach ($strs as $key => $si) {
+		if (preg_match("#-#", $si)) {
+			$tstart = 0;
+			$tend = 0;
+			$tss = explode("-", $si);
+			if (intval($tss[0]) > intval($tss[1])) {
+				$tstart = intval($tss[1]);
+				$tend = intval($tss[0]);
+			} else {
+				$tstart = intval($tss[0]);
+				$tend = intval($tss[1]);
+			}
+			$tmpArr = array();
+			for ($i = $tstart; $i <= $tend; $i++) {
+				$tmpArr[] = $i;
+			}
+			$strs[$key] = implode(",", $tmpArr);
+		}
+	}
+	return implode(",", $strs);
+}
+
+function RandEncode($length=26)
+{
+    $chars='abcdefghigklmnopqrstuvwxwyABCDEFGHIGKLMNOPQRSTUVWXWY0123456789';
+    $rnd_cookieEncode='';
+    $length = rand(28,32);
+    $max = strlen($chars) - 1;
+    for($i = 0; $i < $length; $i++) {
+        $rnd_cookieEncode .= $chars[mt_rand(0, $max)];
+    }
+    return $rnd_cookieEncode;
+}
+
+if (count($argv) > 1 && ($argv[1] == "serv" || $argv[1] == "s")) {
+	// PHP5.4以下不支持内建服务器
+	// 用于开发调试
+	if (phpversion() < "5.4") {
+		die("DedeCMSV6:command web server not support\n\n");
+	}
+	echo "Start Dev Server For DedeCMSV6\n\r";
+	echo "Open http://localhost:8088\n\r";
+	passthru(PHP_BINARY . ' -S localhost:8088 -t' . escapeshellarg('./'));
+} else if (count($argv) > 1 && ($argv[1] == "make" || $argv[1] == "m")) {
+	if (!file_exists($workDir . "/include/common.inc.php")) {
+		DedeCli::error("Check your root path is right");
+		exit;
+	}
+
+	require_once($workDir . "/include/common.inc.php");
+	require_once(DEDEINC . "/cli.class.php");
+
+	// 一个命令行的生成工具
+	if (count($argv) > 2 && ($argv[2] == "arc" || $argv[2] == "a")) {
+		// 生成文档
+		// make arc typeid=1
+		$t1 = ExecTime();
+		$addsql = "1=1";
+		$typeid = Option2SQLin(DedeCli::getOption("typeid"));
+		if (!empty($typeid)) {
+			$addsql .= " AND typeid IN(" . $typeid . ")";
+		}
+		$aid = Option2SQLin(DedeCli::getOption("aid"));
+		if (!empty($aid)) {
+			$addsql .= " AND id IN(" . $typeid . ")";
+		}
+
+		$tt = $dsql->GetOne("SELECT COUNT(id) as dd FROM `#@__arctiny` WHERE " . $addsql);
+		$total = intval($tt['dd']);
+		$dsql->Execute('out', "SELECT id FROM `#@__arctiny` WHERE " . $addsql . " ORDER BY typeid ASC");
+		$i = 0;
+		while ($row = $dsql->GetObject('out')) {
+			$id = $row->id;
+			$ac = new Archives($id);
+			$rurl = $ac->MakeHtml(0);
+			DedeCli::showProgress(ceil(($i / $total) * 100), 100);
+			$i++;
+		}
+		DedeCli::write("Make archive html successfull");
+		$queryTime = ExecTime() - $t1;
+		DedeCli::write($queryTime);
+		exit;
+	} else if (count($argv) > 2 && ($argv[2] == "list" || $argv[2] == "l")) {
+		// 生成栏目
+		$addsql = "1=1";
+		$typeid = Option2SQLin(DedeCli::getOption("typeid"));
+		if (!empty($typeid)) {
+			$addsql .= " AND id IN(" . $typeid . ")";
+		}
+		$dsql->Execute('out', "SELECT id,channeltype FROM `#@__arctype` WHERE " . $addsql);
+		$i = 0;
+		while ($row = $dsql->GetObject('out')) {
+			if ($row->channeltype > 0) {
+				$lv = new ListView($row->id);
+			} else {
+				$lv = new SgListView($row->id);
+			}
+			$lv->CountRecord();
+			DedeCli::write("Start make list html[id:{$row->id}]");
+			$lv->MakeHtml('', '', 0);
+		}
+		exit;
+	} else if (count($argv) > 2 && ($argv[2] == "index" || $argv[2] == "i")) {
+		// 生成首页
+		$position = DedeCli::getOption("position");
+		if (empty($position)) {
+			$position = "../index.html";
+		}
+		if (!preg_match("#\.html$#", $position)) {
+			DedeCli::error("position must end with .html");
+			exit;
+		}
+		$homeFile = DEDEINC . "/" . $position;
+		$homeFile = str_replace("\\", "/", $homeFile);
+		$homeFile = str_replace("//", "/", $homeFile);
+		$row = $dsql->GetOne("SELECT * FROM `#@__homepageset`");
+		$templet = $row['templet'];
+		$templet = str_replace("{style}", $cfg_df_style, $templet);
+        $pv = new PartView();
+		$GLOBALS['_arclistEnv'] = 'index';
+		
+        $pv->SetTemplet($cfg_basedir . $cfg_templets_dir . "/" . $templet);
+        $pv->SaveToHtml($homeFile);
+		DedeCli::write("Make index html successfull");
+	} else if (count($argv) > 2 && ($argv[2] == "auto" || $argv[2] == "o")) {
+		// 自动生成
+		function OptimizeData($dsql)
+		{
+			global $cfg_dbprefix;
+			$tptables = array("{$cfg_dbprefix}archives", "{$cfg_dbprefix}arctiny");
+			$dsql->SetQuery("SELECT maintable,addtable FROM `#@__channeltype` ");
+			$dsql->Execute();
+			while ($row = $dsql->GetObject()) {
+				$addtable = str_replace('#@__', $cfg_dbprefix, $row->addtable);
+				if ($addtable != '' && !in_array($addtable, $tptables)) $tptables[] = $addtable;
+			}
+			$tptable = '';
+			foreach ($tptables as $t) $tptable .= ($tptable == '' ? "`{$t}`" : ",`{$t}`");
+			$dsql->ExecuteNoneQuery(" OPTIMIZE TABLE $tptable; ");
+		}
+		$start = empty(DedeCli::getOption("start"))? "-1 day" : DedeCli::getOption("start");
+		$start = strtotime($start);
+		if (!$start) {
+			DedeCli::error("start is empty");
+			exit;
+		}
+
+		// 1.生成首页
+        $pv = new PartView();
+        $row = $pv->dsql->GetOne("SELECT * FROM `#@__homepageset` ");
+        $templet = str_replace("{style}", $cfg_df_style, $row['templet']);
+        $homeFile = DEDEINC . '/' . $row['position'];
+        $homeFile = str_replace("\\", '/', $homeFile);
+        $homeFile = preg_replace("#\/{1,}#", '/', $homeFile);
+        if ($row['showmod'] == 1) {
+            $pv->SetTemplet($cfg_basedir . $cfg_templets_dir . '/' . $templet);
+            $pv->SaveToHtml($homeFile);
+            $pv->Close();
+        } else {
+            if (file_exists($homeFile)) @unlink($homeFile);
+		}
+		DedeCli::write("Make index html successfull");
+		// 2.生成栏目
+		$query = "SELECT DISTINCT typeid From `#@__arctiny` WHERE senddate >=" . $start . " AND arcrank>-1";
+		$dsql->SetQuery($query);
+		$dsql->Execute();
+		$typeids = array();
+		while ($row = $dsql->GetArray()) {
+			$typeids[$row['typeid']] = 1;
+		}
+		if (count($typeids) > 0) {
+			foreach ($typeids as $k => $v) {
+				$vs = array();
+				$vs = GetParentIds($k);
+				if (!isset($typeidsok[$k])) {
+					$typeidsok[$k] = 1;
+				}
+				foreach ($vs as $k => $v) {
+					if (!isset($typeidsok[$v])) {
+						$typeidsok[$v] = 1;
+					}
+				}
+			}
+			foreach ($typeidsok as $tt=> $k) {
+				$row = $dsql->GetOne("SELECT id,channeltype FROM `#@__arctype` WHERE id=".$tt);
+				if ($row['channeltype'] > 0) {
+					$lv = new ListView($tt);
+				} else {
+					$lv = new SgListView($tt);
+				}
+				$lv->CountRecord();
+				DedeCli::write("Start make list html[id:{$tt}]");
+				$lv->MakeHtml('', '', 0);
+			}
+			DedeCli::write("Make list html successfull");
+		}
+
+		// 生成文档
+		$tt = $dsql->GetOne("SELECT COUNT(id) as dd FROM `#@__arctiny` WHERE senddate >=" . $start . " AND arcrank>-1");
+		$total = intval($tt['dd']);
+		$dsql->Execute('out', "SELECT id FROM `#@__arctiny` WHERE senddate >=" . $start . " AND arcrank>-1 ORDER BY typeid ASC");
+		$i = 0;
+		while ($row = $dsql->GetObject('out')) {
+			$id = $row->id;
+			$ac = new Archives($id);
+			$rurl = $ac->MakeHtml(0);
+			DedeCli::showProgress(ceil(($i / $total) * 100), 100);
+			$i++;
+		}
+		DedeCli::write("Make archives html successfull");
+		
+		// 优化数据
+		OptimizeData($dsql);
+		DedeCli::write("Optimize data successfull");
+	} else {
+		$helpStr = "
+		USAGE:
+			php ./dedebiz make action [arguments...]
+		ACTIONS:
+			index,i Make Index html
+				--position index html position,default: ../index.html(relative include dir)
+			arc,a Make Archive htmls 
+				--typeid type id
+				--aid    archive id
+			list,l Make List htmls
+				--typeid type id
+			auto,o Auto Make htmls
+				--start start time(format:2012-03-12)
+		WEBSITE:
+			https://www.dedebiz.com/help/";
+		DedeCli::write($helpStr);
+		exit;
+	}
+} else if (count($argv) > 1 && ($argv[1] == "update" || $argv[1] == "u")) {
+	define("DEDEINC", $workDir."/include");
+	require_once(DEDEINC."/dedehttpdown.class.php");
+	require_once(DEDEINC . "/cli.class.php");
+	// 更新系统
+	$latestURL = "https://cdn.dedebiz.com/release/latest.txt";
+	$del = new DedeHttpDown();
+	$del->OpenUrl($latestURL);
+	$remoteVerStr = $del->GetHtml();
+	$commStr = file_get_contents(DEDEINC."/common.inc.php");
+	preg_match("#_version_detail = '([\d\.]+)'#", $commStr, $matchs);
+	$cfg_version_detail = $localVerStr = $matchs[1];
+	if (version_compare($localVerStr, $remoteVerStr, '>=')) {
+		DedeCli::error("latest version,don't need to update");
+		exit;
+	}
+
+	$fileHashURL = "https://cdn.dedebiz.com/release/{$cfg_version_detail}.json";
+	$del = new DedeHttpDown();
+	$del->OpenUrl($fileHashURL);
+	$filelist = $del->GetJSON();
+	$offFiles = array();
+	// TODO 命令行自动更新
+} else if (count($argv) > 1 && ($argv[1] == "quick" || $argv[1] == "q")){
+	define("DEDEINC", $workDir."/include");
+	require_once(DEDEINC . "/cli.class.php");
+	// 快速开始一个用于开发的DedeCMSV6环境，基于SQLite无其他依赖
+	if (file_exists($workDir."/data/dedecmsv6.db")) {
+		DedeCli::write("development environment has inited");
+		echo "Start Dev Server For DedeCMSV6\n\r";
+		echo "Open http://localhost:8088\n\r";
+		passthru(PHP_BINARY . ' -S localhost:8088 -t' . escapeshellarg('./'));
+		exit;
+	}
+	// 初始化安装一个开发环境
+	$db = new SQLite3($workDir.'/data/dedecmsv6.db');
+	$fp = fopen($workDir."/install/common.inc.php","r");
+    $configStr1 = fread($fp,filesize($workDir."/install/common.inc.php"));
+    fclose($fp);
+    @chmod($workDir."/data",0777);
+    $dbtype = "sqlite";
+    $dbhost = "";
+    $dbname = "dedecmsv6";
+    $dbuser = "";
+    $dbpwd = "";
+    $dbprefix = "dede_";
+    $dblang = "utf8";
+
+    //common.inc.php
+    $configStr1 = str_replace("~dbtype~",$dbtype,$configStr1);
+    $configStr1 = str_replace("~dbhost~",$dbhost,$configStr1);
+    $configStr1 = str_replace("~dbname~",$dbname,$configStr1);
+    $configStr1 = str_replace("~dbuser~",$dbuser,$configStr1);
+    $configStr1 = str_replace("~dbpwd~",$dbpwd,$configStr1);
+    $configStr1 = str_replace("~dbprefix~",$dbprefix,$configStr1);
+    $configStr1 = str_replace("~dblang~",$dblang,$configStr1);
+    $fp = fopen($workDir."/data/common.inc.php","w") or die("error,check ../data writeable");
+    fwrite($fp,$configStr1);
+    fclose($fp);
+
+    $cookieencode = RandEncode(26);
+    $baseurl = "http://127.0.0.1:8088";
+    $indexUrl = "/";
+    $cmspath = "";
+    $webname = "DedeCMSV6本地测试开发站点";
+    $adminmail = "admin@dedebiz.com";
+
+    $fp = fopen($workDir."/install/config.cache.inc.php","r");
+    $configStr2 = fread($fp,filesize($workDir."/install/config.cache.inc.php"));
+    fclose($fp);
+    $configStr2 = str_replace("~baseurl~",$baseurl,$configStr2);
+    $configStr2 = str_replace("~basepath~",$cmspath,$configStr2);
+    $configStr2 = str_replace("~indexurl~",$indexUrl,$configStr2);
+    $configStr2 = str_replace("~cookieEncode~",$cookieencode,$configStr2);
+    $configStr2 = str_replace("~webname~",$webname,$configStr2);
+    $configStr2 = str_replace("~adminmail~",$adminmail,$configStr2);
+
+    $fp = fopen($workDir.'/data/config.cache.inc.php','w');
+    fwrite($fp,$configStr2);
+    fclose($fp);
+
+    $fp = fopen($workDir.'/data/config.cache.bak.php','w');
+    fwrite($fp,$configStr2);
+    fclose($fp);
+
+    $query = '';
+    $fp = fopen($workDir.'/install/sql-dftables.txt','r');
+    while(!feof($fp))
+    {
+        $line = rtrim(fgets($fp,1024));
+        if(preg_match("#;$#", $line))
+        {
+            $query .= $line."\n";
+            $query = str_replace('#@__',$dbprefix,$query);
+			$query = preg_replace('/character set (.*?) /i','',$query);
+			$query = str_replace('unsigned','',$query);
+			$query = str_replace('TYPE=MyISAM','',$query);
+
+			$query = preg_replace ('/TINYINT\(([\d]+)\)/i','INTEGER',$query);
+			$query = preg_replace ('/mediumint\(([\d]+)\)/i','INTEGER',$query);
+			$query = preg_replace ('/smallint\(([\d]+)\)/i','INTEGER',$query);
+			$query = preg_replace('/int\(([\d]+)\)/i','INTEGER',$query);
+			$query = preg_replace('/auto_increment/i','PRIMARY KEY AUTOINCREMENT',$query);
+			$query = preg_replace('/,  KEY(.*?)MyISAM;/','',$query);
+			$query = preg_replace('/,  KEY(.*?);/',');',$query);
+			$query = preg_replace('/,  UNIQUE KEY(.*?);/',');',$query);
+			$query = preg_replace('/set\(([^\)]*?)\)/','varchar',$query);
+			$query = preg_replace('/enum\(([^\)]*?)\)/','varchar',$query);
+			if ( preg_match("/PRIMARY KEY AUTOINCREMENT/",$query) )
+			{
+			$query = preg_replace('/,([\t\s ]+)PRIMARY KEY  \(`([0-9a-zA-Z]+)`\)/i','',$query);
+			$query = str_replace(',	PRIMARY KEY (`id`)','',$query);
+			}
+			@$db->exec($query);
+    
+            $query='';
+        } else if(!preg_match("#^(\/\/|--)#", $line))
+        {
+            $query .= $line;
+        }
+    }
+    fclose($fp);
+
+    //导入默认数据
+    $query = '';
+    $fp = fopen($workDir.'/install/sql-dfdata.txt','r');
+    while(!feof($fp))
+    {
+        $line = rtrim(fgets($fp, 1024));
+        if(preg_match("#;$#", $line))
+        {
+            $query .= $line;
+            $query = str_replace('#@__',$dbprefix,$query);
+            $query = str_replace("\'","\"",$query);
+            $query = str_replace('\t\n\n',"",$query);
+            $query = str_replace('\t\n',"",$query);
+            @$db->exec($query);
+    
+            $query='';
+        } else if(!preg_match("#^(\/\/|--)#", $line))
+        {
+            $query .= $line;
+        }
+    }
+    fclose($fp);
+
+    //更新配置
+    $cquery = "UPDATE `{$dbprefix}sysconfig` SET value='{$baseurl}' WHERE varname='cfg_basehost';";
+    $db->exec($cquery);
+    $cquery = "UPDATE `{$dbprefix}sysconfig` SET value='{$cmspath}' WHERE varname='cfg_cmspath';";
+    $db->exec($cquery);
+    $cquery = "UPDATE `{$dbprefix}sysconfig` SET value='{$indexUrl}' WHERE varname='cfg_indexurl';";
+    $db->exec($cquery);
+    $cquery = "UPDATE `{$dbprefix}sysconfig` SET value='{$cookieencode}' WHERE varname='cfg_cookie_encode';";
+    $db->exec($cquery);
+    $cquery = "UPDATE `{$dbprefix}sysconfig` SET value='{$webname}' WHERE varname='cfg_webname';";
+    $db->exec($cquery);
+    $cquery = "UPDATE `{$dbprefix}sysconfig` SET value='{$adminmail}' WHERE varname='cfg_adminemail';";
+    $db->exec($cquery);
+
+    $adminuser = "admin";
+    $adminpwd = "admin";
+
+    //增加管理员帐号
+    $adminquery = "INSERT INTO `{$dbprefix}admin` VALUES (1, 10, '$adminuser', '".substr(md5($adminpwd),5,20)."', 'admin', '', '', 0, '".time()."', '127.0.0.1');";
+    $db->exec($adminquery);
+
+    DedeCli::write("admin user:admin");
+    DedeCli::write("admin password:admin");
+
+    //关连前台会员帐号
+    $adminquery = "INSERT INTO `{$dbprefix}member` (`mid`,`mtype`,`userid`,`pwd`,`uname`,`sex`,`rank`,`money`,`email`,
+                   `scores` ,`matt` ,`face`,`safequestion`,`safeanswer` ,`jointime` ,`joinip` ,`logintime` ,`loginip` )
+               VALUES ('1','个人','$adminuser','".md5($adminpwd)."','$adminuser','男','100','0','','10000','10','','0','','".time()."','','0',''); ";
+    $db->exec($adminquery);
+
+    $adminquery = "INSERT INTO `{$dbprefix}member_person` (`mid`,`onlynet`,`sex`,`uname`,`qq`,`msn`,`tel`,`mobile`,`place`,`oldplace`,`birthday`,`star`,
+                   `income` , `education` , `height` , `bodytype` , `blood` , `vocation` , `smoke` , `marital` , `house` ,`drink` , `datingtype` , `language` , `nature` , `lovemsg` , `address`,`uptime`)
+                VALUES ('1', '1', '男', '{$adminuser}', '', '', '', '', '0', '0','1980-01-01', '1', '0', '0', '160', '0', '0', '0', '0', '0', '0','0', '0', '', '', '', '','0'); ";
+    $db->exec($adminquery);
+
+    $adminquery = "INSERT INTO `{$dbprefix}member_tj` (`mid`,`article`,`album`,`archives`,`homecount`,`pagecount`,`feedback`,`friend`,`stow`)
+                     VALUES ('1','0','0','0','0','0','0','0','0'); ";
+    $db->exec($adminquery);
+
+    $adminquery = "Insert Into `{$dbprefix}member_space`(`mid` ,`pagesize` ,`matt` ,`spacename` ,`spacelogo` ,`spacestyle`, `sign` ,`spacenews`)
+                Values('1','10','0','{$adminuser}的空间','','person','',''); ";
+    $db->exec($adminquery);
+	if (phpversion() < "5.4") {
+		die("DedeCMSV6:command web server not support\n\n");
+	}
+	echo "Start Dev Server For DedeCMSV6\n\r";
+	echo "Open http://localhost:8088\n\r";
+	passthru(PHP_BINARY . ' -S localhost:8088 -t' . escapeshellarg('./'));
+	exit;
+} else {
+	echo $helpStr;
+}
